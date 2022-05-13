@@ -17,4 +17,4 @@ For the mid-price:
 ![Mid price](https://github.com/timmurk/Utility-based-market-making/blob/main/mid_price_pnl.png?raw=true)
 
 For the weight-price:
-![Weight price](https://github.com/timmurk/Utility-based-market-making/blob/main/wp_price_pnl.png?raw=true)
+![Weight price](https://github.com/timmurk/Utility-based-market-making/blob/main/wp_pnl.png?raw=true)
