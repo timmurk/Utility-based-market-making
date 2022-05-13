@@ -15,14 +15,18 @@ class DQNAgent(nn.Module):
     def __init__(self, state_shape, n_actions, device, epsilon=0):
         super().__init__()
         self.epsilon = epsilon
-        self.n_actions = n_actions
+        self.n_actions = n_actions ** 2
         self.state_shape = state_shape
         self.device = device
         
         self.lin = nn.Linear(state_shape, 256)
         
+        self.hid = nn.Linear(256, 256)
+        
+        self.norm = nn.BatchNorm1d(256)
+        
         self.advantage = nn.Sequential(
-            nn.Linear(256, n_actions)
+            nn.Linear(256, n_actions ** 2)
         )
         self.value = nn.Sequential(
             nn.Linear(256, 1)
@@ -31,6 +35,12 @@ class DQNAgent(nn.Module):
 
     def forward(self, state_t):
         out = self.lin(state_t)
+        out = F.relu(out)
+        out = self.hid(out)
+        
+        if out.shape[0] > 1:
+            out = self.norm(out)
+        
         out = F.relu(out)
         
         V = self.value(out)
@@ -61,14 +71,14 @@ class DQNAgent(nn.Module):
         return np.where(should_explore, random_actions, best_actions)
     
     def get_action(self, state):
+        #print(state)
         state = np.array([state])
         state = torch.from_numpy(state).type(torch.float32)
         q_value = self.forward(state)
         
-        random_actions = np.random.choice(self.n_actions)
+        action = np.random.choice(self.n_actions)
 
         if random.random() > self.epsilon:
-            action  = q_value.max(1)[1].data[0].cpu()
-            return action
-        
-        return random_actions
+            action = q_value.max(1)[1].data[0].cpu()
+            
+        return action

@@ -3,93 +3,116 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 
-def utility(S, q, gamma, x_0 = 0):
-    return - np.exp(-gamma * (x_0 + q * S))
+def utility(x, gamma):
+    return - np.exp(-gamma * x)
 
-def calculate_reward(q_new, q_old, pnl_new, pnl_last,
-                     S, S_old, flag, gamma):
+def calculate_reward(pnl_new, pnl_last, q_new, S, flag, gamma, util_flag=True):
     if flag:
         # if we end, we need to penalty the maker for having large inventory
-        print(pnl_new, q_new, q_old, S)
-        return -np.exp(-gamma * (pnl_new - q_new * S))
+        if util_flag:
+            return -np.exp(-gamma * (pnl_new - q_new * S))
+        return -np.abs(q_new) * S
     else:
-#        V_1 = -np.exp(-gamma * (pnl_new + q_new * S)) + np.exp(-gamma * (pnl_last + q_new * S)) - 0.1 * np.sign(np.abs(q_new) - #np.abs(q_old))
-#        return V_1
+        if util_flag:
+            U_new = utility(pnl_new, gamma)
+            U_old = utility(pnl_last, gamma)
+            return U_new - U_old
         return pnl_new - pnl_last
 
 class Environment():
     #
-    # our actions are: buy, sell, hold
+    # our actions are: i * spread
     # might be: short, long, nothing
     #
     
-    def __init__(self, data_maker, T, cur, gamma, mid_price=True, all_close=True):
-        self.observation_space = np.array([0.])
-        self.n_actions = 3
+    def __init__(self, data_maker, T, A, k, K, cur, gamma, util_flag=True, mid_flag=False):
+        '''
+        Make and environment for market interaction.
+        
+        Parameters:
+        data_maker (DataMaker): Data emulator.
+        T (int): Number of ticks to the end of the trading day.
+        cur (int): The start moment.
+        gamma (float): Risk aversion coefficient.
+        mid_price (bool): True-price flag. If true - determined by middle price, else by weighted.
+        util_flag (bool): Reward policy flag. If true - determined by utility policy, else by P&L.
+        '''
+        self.observation_space = np.array([0., 0.])
+        self.n_actions = K
         
         self.data_maker = data_maker
-        self.positions = []
-        self.cur = cur
-        self.gamma = gamma
-        self.short_positions = []
-        self.long_positions = []
+        self.cur = cur # current pos
+        self.T = T #  number of ticks to end 
+        self.gamma = gamma # risk aversion
+        self.A = A # A param for Poisson
+        self.k = k # k param for Poisson
+        self.K = K # Number of actions supported
         
-        self.q = 0
-        self.q_hist = [0]
+        self.short_positions = [] # all short prices
+        self.long_positions = [] # all long prices
         
-        self.S_prev = 0.
-        self.all_close = all_close
-        self.prev_pnl = 0.
-        self.mid_price = mid_price
-        self.pnl_hist = []
-        self.actions = []
-        self.PnL = 0.
+        self.q = np.zeros(T + 2) # current inventory
+        self.x = np.zeros(T + 2) # current wealth
+        self.pnl = np.zeros(T + 2) # current P&L
         
+        self.actions = [] # actions list
+        
+        self.util_flag = util_flag
+        self.mid_flag = mid_flag
     
     def step(self, action):
-        pnl_add = 0.
-        pnl_mem = 0.
-        self.actions.append(action)
         
-        if self.mid_price:
-            _, _, p_a, p_b, flag = self.data_maker.get()
-            S = 0.5 * (p_a + p_b)
-        else:
-            v_a, v_b, p_a, p_b, flag = self.data_maker.get()
-            w_a = v_a / (v_a + v_b)
-            w_b = 1. - w_a
-            S = w_a * p_a + w_b * p_b
-    
-#        S = np.log(S / np.exp(self.S_prev))
+        i = self.cur
+        pnl_mem = 0.
+        
+        
+        # _________________________________________________ #
+        
+        v_a, v_b, p_a, p_b, flag = self.data_maker.get()
+        
         add_for_nothing = 0
         
-        if action == 0:
-            if len(self.short_positions) == 0: # no shorts
-                self.long_positions.append(S)
-                self.q += 1
-            else:
-                if self.all_close: 
-                    self.q += len(self.short_positions)
-                    pnl_mem = np.sum(self.short_positions - S)
-                    self.short_positions = []
-                else:
-                    pass
-        elif action == 1:
-            if len(self.long_positions) == 0: # no longs
-                self.short_positions.append(S)
-                self.q -= 1
-            else:
-                if self.all_close: 
-                    self.q -= len(self.long_positions)
-                    pnl_mem = np.sum(S - self.long_positions)
-                    self.long_positions = []
-                else:
-                    pass
-        else:
-            add_for_nothing = -1.0 / 10
+        S = (p_a + p_b) / 2.# mid price to get current value of portfollio
+
+        if self.mid_flag:
+            w = v_a * 1./ (v_a + v_b)
+            S = w * p_a + (1 - w) * p_b
             
-        self.prev_pnl = self.PnL
-        self.PnL += pnl_mem
+        action_ask = np.floor_divide(action, self.K) + 1
+        action_bid = np.mod(action, self.K) + 1
+        
+        self.actions.append((action_ask, action_bid))  # save for future
+        
+        spread_tick = np.abs(p_a - p_b) * 2.
+        
+        delta_ask = spread_tick * action_ask
+        delta_bid = spread_tick * action_bid
+        
+        r_ask = S + spread_tick * action_ask
+        r_bid = S - spread_tick * action_bid
+        
+        lambda_ask = self.A * np.exp(-self.k * delta_ask)
+        lambda_bid = self.A * np.exp(-self.k * delta_bid)
+
+        # _________________________________________________ #
+        
+        add_ask, add_bid = 0, 0
+
+        dt = 1.0 / self.T
+        
+        if np.random.rand() < lambda_ask * dt:
+            add_ask = 1
+        if np.random.rand() < lambda_ask * dt:
+            add_bid = 1
+            
+        self.q[i + 1] = self.q[i] - add_ask + add_bid
+        self.x[i + 1] = self.x[i] + r_ask * add_ask - r_bid * add_bid
+        self.pnl[i + 1] = self.x[i + 1] + self.q[i + 1] * S
+        
+        reward = calculate_reward(self.pnl[i + 1], self.pnl[i], self.q[i + 1], S,
+                                  flag, self.gamma, self.util_flag)
+
+        # _________________________________________________ #
         
         # check that there is no current data
         if self.data_maker.is_empty():
@@ -97,35 +120,31 @@ class Environment():
             
         is_done = flag
         
-        reward = calculate_reward(self.q, self.q_hist[-1], self.PnL, self.prev_pnl, S, self.S_prev, flag, self.gamma) + add_for_nothing 
-        
         info = 'Done' if is_done else 'Continue'
         
-        self.prev_S = S
-        
-        self.pnl_hist.append(self.PnL)
-        self.q_hist.append(self.q)
-        
         self.cur += 1
-        
-        if flag == True:
-            self.pnl_hist[-1] += np.sum(S - self.long_positions) + np.sum(self.short_positions - S)
-        
-        return self.q, reward, is_done, info
-    
+                
+        return (self.q[i + 1], self.cur / (self.T + 1)), reward, is_done, info
     
     def reset(self):
+        
+        self.data_maker.step()
+        self.cur = 0
+
         self.long_positions = []
         self.short_positions = []
-        self.cur = 0
-        self.data_maker.step()
-#        self.pnl_hist = []
-        self.q_hist = [0]
-#        self.actions = []
-        self.q = 0
-        self.S_prev = 0
+        self.pnl_hist = []
+        self.q_hist = []
+        self.actions = []
         
-        return self.q
+        self.q = np.zeros(self.T + 2)
+        self.pnl = np.zeros(self.T + 2)
+        self.x = np.zeros(self.T + 2)
+        
+        self.util_flag = self.util_flag
+        self.mid_flag = self.mid_flag
+        
+        return (self.q[0], self.cur / (self.T + 1))
 
     def render(self, mode='human', close=False):
         pass
