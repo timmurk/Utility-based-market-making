@@ -14,7 +14,7 @@ The RL ideas are implemented: Double DQN + Prioritized Exp.Replay for simplifica
 The current results presented here. 
 
 For the mid-price: 
-![Mid price](https://github.com/timmurk/Utility-based-market-making/blob/main/mid_price_pnl.jpg?raw=true)
+![Mid price](https://github.com/timmurk/Utility-based-market-making/blob/main/mid_price_pnl.png?raw=true)
 
 For the weight-price:
-![Weight price](https://github.com/timmurk/Utility-based-market-making/blob/main/wp_price_pnl.jpg?raw=true)
+![Weight price](https://github.com/timmurk/Utility-based-market-making/blob/main/wp_price_pnl.png?raw=true)
